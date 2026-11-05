@@ -1,20 +1,25 @@
 """
-firetruck.py -- the firetruck SAMPLING-BASED planner: a Probabilistic RoadMap (PRM).
+firetruck.py -- the firetruck. SAMPLING-BASED planner: a Probabilistic RoadMap (PRM).
 
-Three pieces
-CollisionChecker  "Is the truck body hitting anything at these poses?"
+Three pieces:
+
+  CollisionChecker  "Is the truck body hitting anything at these poses?"
                     The truck rectangle is covered by 3 circles. A precomputed
                     clearance map (distance to nearest obstacle) makes each check
                     a simple array lookup.
-Roadmap           Built ONCE before the simulation starts:
+
+  Roadmap           Built ONCE before the simulation starts (a priori):
                       1. sample random collision-free poses (x, y, heading)
                       2. connect each pose to its nearest neighbors with a Dubins
                          path (dubins.py = the local planner, respects the 13 m
                          turning radius), keep the edge if the whole path is free
                     Queries then use the same A* as the Wumpus, but on this graph.
-FireTruck         Behavior: pick the most important fire, drive the roadmap to
-                    a node within 10 m of it, stop 5 s to extinguish. In the endgame,
-                    once the Wumpus attacks, chase the Wumpus instead.
+
+  FireTruck         Behavior: one Dijkstra search over the roadmap gives the real
+                    driving distance to every node. Pick the node next to fire(s)
+                    that stops the most fire per second of driving, drive there,
+                    stop 5 s to extinguish. In the endgame, once the Wumpus
+                    attacks, chase the Wumpus instead.
 
 Truck pose (x, y, th) is the REAR AXLE (standard for car-like kinematics).
 """
@@ -25,13 +30,22 @@ from scipy.ndimage import distance_transform_edt
 
 import config as C
 import dubins
-from astar import astar
+from astar import astar, dijkstra, path_to
 from world import BURNING, IGNITABLE
 
-#truck body: rear overhang + wheelbase + front overhang = 4.9 m
+# ---- truck body: rear overhang + wheelbase + front overhang = 4.9 m
+def drive_time(distance):
+    """Seconds to drive `distance` meters from a stop to a stop: speed up at
+    TRUCK_ACCEL, cruise at TRUCK_MAX_SPEED, brake at TRUCK_ACCEL."""
+    a, v = C.TRUCK_ACCEL, C.TRUCK_MAX_SPEED
+    if distance >= v * v / a:                     # long enough to reach top speed
+        return distance / v + v / a
+    return 2.0 * math.sqrt(distance / a)          # speed up then straight to braking
+
+
 REAR_OVERHANG = (C.TRUCK_LENGTH - C.TRUCK_WHEELBASE) / 2           # 0.95 m behind rear axle
 BODY_CENTER = C.TRUCK_LENGTH / 2 - REAR_OVERHANG                   # 1.5 m ahead of rear axle
-#three circles along the body that together cover the whole 4.9 x 2.2 rectangle
+# Three circles along the body that together cover the whole 4.9 x 2.2 rectangle
 _part = C.TRUCK_LENGTH / 3
 CIRCLE_OFFSETS = [-REAR_OVERHANG + _part * (k + 0.5) for k in range(3)]
 CIRCLE_RADIUS = math.hypot(_part / 2, C.TRUCK_WIDTH / 2)            # ~1.37 m
@@ -49,7 +63,7 @@ class CollisionChecker:
         self.max_index = occupied.shape[0] - 1
 
     def poses_free(self, xs, ys, ths):
-        #true if the truck body is collision-free at every pose in the arrays
+        """True if the truck body is collision-free at every pose in the arrays."""
         cos, sin = np.cos(ths), np.sin(ths)
         for off in CIRCLE_OFFSETS:
             ix = np.clip(((xs + off * cos) / self.RES).astype(int) + 1, 0, self.max_index)
@@ -138,20 +152,25 @@ class Roadmap:
 class FireTruck:
     def __init__(self, world, rng):
         self.world = world
-        t0 = time.process_time()                       #roadmap time counts as planning CPU
+        t0 = time.process_time()                       # roadmap time counts as planning CPU
         self.checker = CollisionChecker(world)
         self.roadmap = Roadmap(self.checker, rng, C.TRUCK_START)
         rm = self.roadmap
-        #body-center position of every roadmap node
+        # body-center position of every roadmap node
         th = np.array([n[2] for n in rm.nodes])
         self.node_centers = rm.xy + BODY_CENTER * np.column_stack([np.cos(th), np.sin(th)])
-        #for each obstacle: the roadmap nodes close enough to spray it
+        # for each obstacle: the roadmap nodes close enough to spray it
         self.spray_nodes = [
             {i for i in rm.usable
              if o.distance_to(*self.node_centers[i]) <= C.EXTINGUISH_RANGE}
             for o in world.obstacles]
+        # ...and the other way around: for each node, the obstacles it can spray
+        self.fires_near_node = {}
+        for o in world.obstacles:
+            for i in self.spray_nodes[o.idx]:
+                self.fires_near_node.setdefault(i, []).append(o.idx)
         self.cpu_roadmap = time.process_time() - t0
-        self.cpu = self.cpu_roadmap                    #total planning CPU (roadmap + queries)
+        self.cpu = self.cpu_roadmap                    # total planning CPU (roadmap + queries)
 
         self.x, self.y, self.th = C.TRUCK_START
         self.node = 0                # roadmap node we are at / last passed
@@ -159,8 +178,9 @@ class FireTruck:
         self.edge_s = 0.0            # meters driven along route[0]
         self.speed = 0.0
         self.stopped_time = 0.0      # how long we've been standing still
-        self.target = None           # obstacle index, or "wumpus"
-        self.retry_timer = 0.0       # wait a bit after a failed plan
+        self.target = None           # "fire", "wumpus", or None (idle)
+        self.goal_node = None        # roadmap node we are driving to / spraying from
+        self.retry_timer = 0.0       # wait a bit after finding nothing to do
         self.alive = True
         self.attacked = False        # has the Wumpus started burning us (endgame)?
         self.burn = 0.0              # seconds of burn damage taken
@@ -169,7 +189,7 @@ class FireTruck:
         return (self.x + BODY_CENTER * math.cos(self.th),
                 self.y + BODY_CENTER * math.sin(self.th))
 
-    #roadmap query
+    # ------------------------------------------------------------ roadmap query
     def plan(self, is_goal, heuristic):
         """A* on the roadmap from the current node. Returns a list of Edges or None."""
         t0 = time.process_time()
@@ -195,7 +215,7 @@ class FireTruck:
         return self.plan(lambda i: math.hypot(*(self.node_centers[i] - w)) <= reach,
                          lambda i: max(0.0, math.hypot(*(self.roadmap.xy[i] - w)) - reach - 3.0))
 
-    #one time step
+    # ------------------------------------------------------------ one time step
     def step(self, t, dt, wumpus):
         if not self.alive:
             return
@@ -225,40 +245,67 @@ class FireTruck:
                 self.route = self.plan_to_wumpus(wumpus) or []
             return
 
-        # Still waiting next to a burning target? Keep standing still.
-        if (self.target not in (None, "wumpus")
-                and self.world.obstacles[self.target].state == BURNING
-                and self.node in self.spray_nodes[self.target]):
+        # Parked next to something still burning? Keep standing still (spraying).
+        if self.target == "fire" and self.node == self.goal_node and self.burning_near(self.node):
             return
         if self.retry_timer > 0:
             return
-        self.target = None
-        for o in self.rank_fires(t)[:3]:              # try the best few fires
-            route = self.plan_to_fire(o)
-            if route is not None:
-                self.target, self.route = o.idx, route
-                return
-        self.retry_timer = 1.0                        # nothing reachable; try again in 1 s
+        self.target, self.goal_node = None, None
+        goal, route = self.choose_fire(t)
+        if goal is None:
+            self.retry_timer = 1.0                    # nothing worth doing; look again in 1 s
+            return
+        self.target, self.goal_node, self.route = "fire", goal, route
 
-    def rank_fires(self, t):
+    def burning_near(self, node):
+        return any(self.world.obstacles[i].state == BURNING
+                   for i in self.fires_near_node.get(node, []))
+
+    def choose_fire(self, t):
         """
-        Most important fire first. score = distance - 15 * (threatened neighbors).
-        A fire that hasn't spread yet and has lots of unburned neighbors is worth a
-        detour. Skip fires that will burn out before we can get there.
+        Where should the truck go next? Uses REAL roadmap driving distance.
+
+        1. One Dijkstra search from the truck's node: the driving distance to every
+           roadmap node (accounts for the turning radius and one-way edges).
+        2. For every node that is within 10 m of a burning obstacle, ask:
+             arrive  = when we'd get there (accel / top speed / brake)
+             done    = arrive + 5 s of spraying
+             value   = fires we'd put out there (still burning at `done`)
+                     + unburned neighbors we'd save (fires put out before they spread)
+             rate    = value / (done - now)      "fire stopped per second"
+        3. Go to the node with the highest rate.
+        Returns (goal_node, route as a list of Edges) or (None, None).
         """
-        cx, cy = self.center()
-        ranked = []
-        for o in self.world.obstacles:
-            if o.state != BURNING or not self.spray_nodes[o.idx]:
+        t0 = time.process_time()
+        edges = self.roadmap.edges
+        dist, came_from = dijkstra(
+            self.node, lambda i: ((j, e.length) for j, e in edges[i].items()))
+
+        obstacles = self.world.obstacles
+        best_rate, best_node = 0.0, None
+        for node, d in dist.items():
+            nearby = self.fires_near_node.get(node)
+            if not nearby:
                 continue
-            d = o.distance_to(cx, cy)
-            time_left = C.BURN_OUT_TIME - (t - o.t_ignited)
-            if d / C.TRUCK_MAX_SPEED + C.EXTINGUISH_TIME > time_left:
-                continue
-            threatened = 0 if o.has_spread else sum(
-                1 for j in o.neighbors if self.world.obstacles[j].state in IGNITABLE)
-            ranked.append((d - C.TRUCK_THREAT_WEIGHT * threatened, o.idx))
-        return [self.world.obstacles[i] for _, i in sorted(ranked)]
+            done = t + drive_time(d) + C.EXTINGUISH_TIME
+            put_out, saved = 0, set()
+            for i in nearby:
+                o = obstacles[i]
+                if o.state != BURNING or done >= o.t_ignited + C.BURN_OUT_TIME:
+                    continue                          # not burning, or gone before we finish
+                put_out += 1
+                if not o.has_spread and done < o.t_ignited + C.SPREAD_DELAY:
+                    saved.update(j for j in o.neighbors if obstacles[j].state in IGNITABLE)
+            rate = (put_out + len(saved)) / (done - t)
+            if rate > best_rate:
+                best_rate, best_node = rate, node
+
+        route = None
+        if best_node is not None:
+            path = path_to(came_from, best_node)
+            route = [edges[a][b] for a, b in zip(path[:-1], path[1:])]
+        self.cpu += time.process_time() - t0
+        return best_node, route
 
     def drive(self, dt, hunting):
         """Follow the route at up to 10 m/s, accelerating/braking at TRUCK_ACCEL."""
@@ -284,12 +331,12 @@ class FireTruck:
         self.th = float(np.interp(self.edge_s, e.s, e.th))
 
     def should_replan(self, hunting):
-        #At each node: replan if the Wumpus moved, or our fire is no longer burning
+        """At each node: replan if the Wumpus moved, or our fire is no longer burning."""
         if hunting:
             return True
         if self.target == "wumpus":
             return True                                             # chase is over
-        return self.target is None or self.world.obstacles[self.target].state != BURNING
+        return self.goal_node is None or not self.burning_near(self.goal_node)
 
     def spray(self):
         """Stopped for 5 s: extinguish every burning obstacle within 10 m."""
