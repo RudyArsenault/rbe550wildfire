@@ -36,8 +36,7 @@ TRUCK_MAX_SPEED = 10.0                # (ASSIGNMENT)
 TRUCK_ACCEL = 2.0                     # (CHOICE) gentle accel/brake, saves the transmission
 EXTINGUISH_RANGE = 10.0               # (ASSIGNMENT) must be within 10 m of the fire...
 EXTINGUISH_TIME = 5.0                 # (ASSIGNMENT) ...and stopped for 5 s
-TRUCK_THREAT_WEIGHT = 15.0            # (CHOICE) target choice: meters of detour worth one
-                                      #          threatened neighbor (see firetruck.py)
+
 
 # PRM roadmap
 PRM_SAMPLES = 1000                    # (CHOICE) number of random poses (x, y, heading)
@@ -49,7 +48,7 @@ PRM_CHECK_STEP = 0.5                  # (CHOICE) collision-check every 0.5 m alo
 
 #wumpus
 WUMPUS_SPEED = 4.0                    # (CHOICE) normal walking speed while setting fires
-WUMPUS_SPRINT_SPEED = 12.0            # (CHOICE) endgame speed -- faster than the truck (10)
+WUMPUS_SPRINT_SPEED = 12.0            # (CHOICE) endgame speed -- faster than the truck (12)
 WUMPUS_AVOID_TRUCK = 0.5              # (CHOICE) arson target choice: prefer obstacles far
                                       #          from the truck (see wumpus.py)
 WUMPUS_REPLAN_PERIOD = 0.5            # (CHOICE) endgame: replan every 0.5 s (truck moves)
