@@ -1,12 +1,12 @@
 """
-config.py  every tunable number 
+config.py -- every tunable number in one place.
 
 Units: meters, seconds, radians.
 Values marked (ASSIGNMENT) come straight from the PDF.
-Values marked (CHOICE) are design decisions 
+Values marked (CHOICE) are our own design decisions -- mention them in the report.
 """
 
-# world
+# ---------------------------------------------------------------- world
 FIELD_SIZE = 250.0                    # (ASSIGNMENT) square field, 250 m per side
 CELL = 5.0                            # (ASSIGNMENT) one tetromino square = 5 m
 GRID_N = int(FIELD_SIZE / CELL)       # 50 x 50 cells
@@ -16,18 +16,18 @@ TRUCK_START = (15.0, 125.0, 0.0)      # (CHOICE) x, y, heading -- left side, fac
 WUMPUS_START = (235.0, 125.0)         # (CHOICE) right side (opposite the truck)
 SPAWN_CLEAR_RADIUS = 20.0             # (CHOICE) keep obstacles away from the start spots
 
-# fire
+# ---------------------------------------------------------------- fire
 SPREAD_DELAY = 10.0                   # (ASSIGNMENT) burning 10 s -> ignites neighbors
 SPREAD_RADIUS = 30.0                  # (ASSIGNMENT) ...within 30 m
 BURN_OUT_TIME = 60.0                  # (CHOICE) burning this long -> "burned" (PDF doesn't say)
 
-#  simulation
+# ---------------------------------------------------------------- simulation
 SIM_TIME = 3600.0                     # (ASSIGNMENT) 3600 s of simulated time
 DT = 0.1                              # (CHOICE) time step
 N_RUNS = 5                            # (ASSIGNMENT) five runs, different random fields
 FRAME_EVERY = 1.0                     # (CHOICE) sim seconds between animation frames
 
-#  firetruck (Table 1)
+# ---------------------------------------------------------------- firetruck (Table 1)
 TRUCK_WIDTH = 2.2                     # (ASSIGNMENT)
 TRUCK_LENGTH = 4.9                    # (ASSIGNMENT)
 TRUCK_WHEELBASE = 3.0                 # (ASSIGNMENT)
@@ -39,7 +39,7 @@ EXTINGUISH_TIME = 5.0                 # (ASSIGNMENT) ...and stopped for 5 s
 TRUCK_THREAT_WEIGHT = 15.0            # (CHOICE) target choice: meters of detour worth one
                                       #          threatened neighbor (see firetruck.py)
 
-# PRM roadmap
+# ---------------------------------------------------------------- PRM roadmap
 PRM_SAMPLES = 1000                    # (CHOICE) number of random poses (x, y, heading)
 PRM_K_NEIGHBORS = 12                  # (CHOICE) connect each pose to its 12 "nearest"
                                       #          (nearest = shortest Dubins path)
@@ -47,14 +47,14 @@ PRM_MAX_NEIGHBOR_DIST = 50.0          # (CHOICE) only consider poses within 50 m
 PRM_MAX_EDGE_LENGTH = 70.0            # (CHOICE) reject loop-de-loop Dubins edges
 PRM_CHECK_STEP = 0.5                  # (CHOICE) collision-check every 0.5 m along an edge
 
-# wumpus
+# ---------------------------------------------------------------- wumpus
 WUMPUS_SPEED = 4.0                    # (CHOICE) normal walking speed while setting fires
 WUMPUS_SPRINT_SPEED = 12.0            # (CHOICE) endgame speed -- faster than the truck (10)
 WUMPUS_AVOID_TRUCK = 0.5              # (CHOICE) arson target choice: prefer obstacles far
                                       #          from the truck (see wumpus.py)
 WUMPUS_REPLAN_PERIOD = 0.5            # (CHOICE) endgame: replan every 0.5 s (truck moves)
 
-# endgame 
+# ---------------------------------------------------------------- endgame (cat & mouse)
 # Starts only when every obstacle is burning or burned (nothing left to ignite).
 TRUCK_BURN_TIME = 10.0                # (CHOICE) wumpus needs 10 s of contact to burn truck
 WUMPUS_DOUSE_TIME = TRUCK_BURN_TIME / 2   # truck douses wumpus twice as fast (5 s)

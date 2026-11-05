@@ -44,7 +44,7 @@ def octile(a, b):
 class Wumpus:
     def __init__(self, world):
         self.world = world
-        self.free = world.owner < 0                        #true where the Wumpus can stand
+        self.free = world.owner < 0                        #true where it can stand
         self.free_cells = [tuple(c) for c in np.argwhere(self.free)]
         self.free_centers = (np.array(self.free_cells) + 0.5) * C.CELL
 
